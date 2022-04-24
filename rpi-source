@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
 
 #
 # Copyright (C) 2014 Noralf Tronnes
@@ -11,9 +11,9 @@ import os
 import struct
 import sys
 import argparse
-import urllib
-import urllib2
-import urlparse
+import urllib.request, urllib.parse, urllib.error
+import urllib.request, urllib.error, urllib.parse
+import urllib.parse
 import gzip
 import subprocess
 import re
@@ -24,8 +24,10 @@ import errno
 # used by archive file and unpacked archive
 DISK_USAGE_MB = 900
 
-PROCESSOR_TYPES = range(0, 4)
-PROCESSOR_TYPES_NAMES = ['BCM2835', 'BCM2836', 'BCM2837', 'BCM2711']
+PROCESSOR_TYPES_NAMES = ('BCM2835', 'BCM2836', 'BCM2837', 'BCM2711')
+PROCESSOR_TYPES = list(range(0, len(PROCESSOR_TYPES_NAMES)))
+ARCHITECTURE_TYPES_NAMES = ('32-bit', '64-bit')
+ARCHITECTURE_TYPES = list(range(0, len(ARCHITECTURE_TYPES_NAMES)))
 
 help = "https://github.com/RPi-Distro/rpi-source/blob/master/README.md"
 script_repo = "https://github.com/RPi-Distro/rpi-source"
@@ -56,6 +58,7 @@ parser.add_argument("-q", "--quiet", help="Quiet",
 parser.add_argument("-g", "--default-config", help="Generate a default kernel configuration with 'make bcmrpi_defconfig'",
                     action="store_true")
 parser.add_argument("--processor", type=int, choices=PROCESSOR_TYPES, help="Override Processor type")
+parser.add_argument("--architecture", type=int, choices=ARCHITECTURE_TYPES, help="Override Architecture type")
 parser.add_argument("--skip-gcc", help=argparse.SUPPRESS, action="store_true")  # Deprecated
 parser.add_argument("--skip-space", help="Skip disk space check",
                     action="store_true")
@@ -63,8 +66,6 @@ parser.add_argument("--skip-update", help="Skip checking for update to this scri
                     action="store_true")
 parser.add_argument("--tag-update", help="Tell the update mechanism that this is the latest version of the script",
                     action="store_true")
-parser.add_argument("--download-only", help="Just download the kernel tarball, without unpacking source and installing it",
-                    action="store_true",)
 args = parser.parse_args()
 
 
@@ -77,11 +78,11 @@ def debug(str):
 
 def info(str):
     if not args.quiet:
-        print("\n *** %s" % str)
+        print(("\n *** %s" % str))
 
 def warn(str):
     if not args.quiet:
-        print("\n !!! %s" % str)
+        print(("\n !!! %s" % str))
 
 def fail(str):
     sys.stderr.write("ERROR:\n%s\n\nHelp: %s\n" % (str, help))
@@ -104,30 +105,27 @@ def writef(f, str, mode='w'):
     debug("writef(%s)" % f)
     if not args.dry_run:
         with open(f, mode) as f:
-            f.write(str)
+            f.write(str(str))
 
 def download(url):
     debug("download: %s" % url)
     try:
-        res = urllib2.urlopen(url).read()
-    except urllib2.HTTPError, e:
-        fail(
-            "Couldn't download %s, HTTPError: %s\n\n%s"
-            % (url, e.code, json.dumps(json.load(e), indent=4))
-        )
-    except urllib2.URLError, e:
+        res = urllib.request.urlopen(url).read()
+    except urllib.error.HTTPError as e:
+        fail("Couldn't download %s, HTTPError: %s" % (url, e.code))
+    except urllib.error.URLError as e:
         fail("Couldn't download %s, URLError: %s" % (url, e.args))
     return res
 
 def download_to(url, file):
     debug("download_to: %s -> %s" % (url, file))
     if not args.dry_run:
-        urllib.urlretrieve (url, file)
+        urllib.request.urlretrieve (url, file)
 
 def update_get_head():
     if update_get_head.ref:
         return update_get_head.ref
-    repo_short = urlparse.urlparse(script_repo).path
+    repo_short = urllib.parse.urlparse(script_repo).path
     repo_api = "https://api.github.com/repos%s/git/refs/heads/master" % repo_short
     res = download(repo_api)
     try:
@@ -175,7 +173,7 @@ def do_update():
     os.execv(sys.executable, argv)
 
 def check_diskspace(dir):
-    df = sh_out("df %s" % dir)
+    df = str(sh_out("df %s" % dir))
     nums = re.findall(r'(?<=\s)\d+(?=\s+)', df)
     if not nums or len(nums) != 3:
         info("Warning: unable to check available diskspace")
@@ -218,16 +216,30 @@ def proc_config_gz():
         return f.read()
 
 
-def processor_type_suffix():
-    if processor_type == 0:
-        return ''
-    elif processor_type == 1 or processor_type == 2:
-        return '7'
-    elif processor_type == 3:
-        return '7l'
-    else:
+def kernel_suffix():
+    if processor_type not in PROCESSOR_TYPES:
         fail("Unsupported processor_type %d" % processor_type)
+    if architecture_type not in ARCHITECTURE_TYPES:
+        fail("Unsupported architecture_type %d" % architecture_type)
 
+    if processor_type == 0: # BCM2835 uses kernel.img
+        if architecture_type == 0:
+            return ''
+    elif processor_type == 1: # BCM2836 uses kernel7.img
+        if architecture_type == 0:
+            return '7'
+    elif processor_type == 2: # BCM2837 uses kernel7.img or kernel8.img
+        if architecture_type == 0:
+            return '7'
+        elif architecture_type == 1:
+            return '8'
+    elif processor_type == 3: # BCM2711 uses kernel7l.img or kernel8.img
+        if architecture_type == 0:
+            return '7l'
+        elif architecture_type == 1:
+            return '8'
+
+    fail("Unsupported combination of processor_type %d and architecture_type %d" % (processor_type, architecture_type))
 
 def rpi_update_method(uri):
     kernel = Kernel()
@@ -238,13 +250,13 @@ def rpi_update_method(uri):
         fw_rev = f.read().strip()
     info("Firmware revision: %s" % fw_rev)
 
-    repo_short = urlparse.urlparse(uri).path
+    repo_short = urllib.parse.urlparse(uri).path
 
     repo_api = "https://api.github.com/repos%s" % repo_short
     repo_raw = "https://raw.githubusercontent.com%s" % repo_short
 
     kernel.git_hash = download("%s/%s/git_hash" % (repo_raw, fw_rev)).strip()
-    kernel.symvers = "%s/%s/Module%s.symvers" % (repo_raw, fw_rev, processor_type_suffix())
+    kernel.symvers = "%s/%s/Module%s.symvers" % (repo_raw, fw_rev, kernel_suffix())
 
     if not args.default_config:
         kernel.config = proc_config_gz()
@@ -256,6 +268,7 @@ def debian_method(fn):
     info("Using: %s" % fn)
     with gzip.open(fn, 'rb') as f:
         debian_changelog = f.read()
+        debian_changelog = str(debian_changelog.decode('utf-8'))
 
     # Find first firmware entry in log (latest entries are at the top)
     fw_rev = re.search(r'firmware as of ([0-9a-fA-F]+)', debian_changelog)
@@ -269,7 +282,7 @@ def debian_method(fn):
     repo_raw = "https://raw.githubusercontent.com/raspberrypi/firmware"
 
     kernel.git_hash = download("%s/%s/extra/git_hash" % (repo_raw, fw_rev)).strip()
-    kernel.symvers = "%s/%s/extra/Module%s.symvers" % (repo_raw, fw_rev, processor_type_suffix())
+    kernel.symvers = "%s/%s/extra/Module%s.symvers" % (repo_raw, fw_rev, kernel_suffix())
 
     if not args.default_config:
         kernel.config = proc_config_gz()
@@ -320,6 +333,15 @@ def get_processor_type():
     return processor
 
 
+def get_architecture_type():
+    if args.architecture is not None:
+        return args.architecture
+
+    if platform.machine() == 'aarch64':
+        return 1
+    else:
+        return 0
+
 def check_bc():
     if not os.path.exists('/usr/bin/bc'):
         fail("bc is NOT installed. Needed by 'make modules_prepare'. On Raspberry Pi OS,\nrun 'sudo apt install bc' to install it.")
@@ -328,6 +350,9 @@ def check_bc():
 
 processor_type = get_processor_type()
 info("SoC: %s" % PROCESSOR_TYPES_NAMES[processor_type])
+
+architecture_type = get_architecture_type()
+info("Arch: %s" % ARCHITECTURE_TYPES_NAMES[architecture_type])
 
 # FIX usage of -d DEST with relative pathnames
 args.dest = os.path.abspath(args.dest)
@@ -355,6 +380,8 @@ elif os.path.exists(debianlog):
 else:
     fail("Can't find a source for this kernel")
 
+kernel.git_hash = kernel.git_hash.decode('utf-8')
+
 info("Linux source commit: %s" % kernel.git_hash)
 
 linux_dir = os.path.join(args.dest, "linux-%s" % kernel.git_hash)
@@ -371,10 +398,6 @@ if not os.path.exists(linux_tar):
     sh("wget %s -O %s https://github.com/raspberrypi/linux/archive/%s.tar.gz" % (("-q" if args.quiet else ""), linux_tar, kernel.git_hash))
 else:
     info("Download kernel source: Already downloaded %s" % linux_tar)
-
-if args.download_only:
-    info("Downloaded kernel source tarball: %s" % linux_tar)
-    quit()
 
 info("Unpack kernel source")
 if args.quiet:
@@ -402,8 +425,13 @@ if args.default_config or not kernel.config:
     info(".config (generating default)")
     if processor_type == 0:
         sh("cd %s && make bcmrpi_defconfig" % (linux_symlink,))
-    elif processor_type == 1 or processor_type == 2:
+    elif processor_type == 1:
         sh("cd %s && make bcm2709_defconfig" % (linux_symlink,))
+    elif processor_type == 2:
+        if architecture_type == 0:
+            sh("cd %s && make bcm2709_defconfig" % (linux_symlink,))
+        elif architecture_type == 1:
+            sh("cd %s && make bcmrpi3_defconfig" % (linux_symlink,))
     elif processor_type == 3:
         sh("cd %s && make bcm2711_defconfig" % (linux_symlink,))
     else:
